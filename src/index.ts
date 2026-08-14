@@ -2,6 +2,12 @@ import { spawn, ChildProcess } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
+import { AsyncLocalStorage } from 'async_hooks';
+import * as http from 'http';
+import { WebSocketServer, WebSocket } from 'ws';
+
+const taskContext = new AsyncLocalStorage<string>();
+
 
 export interface SnerdQueueOptions {
     binaryPath?: string;
@@ -27,6 +33,7 @@ export class SnerdQueue {
     private handlers: Map<string, TaskHandler> = new Map();
     private isShuttingDown: boolean = false;
     private pendingEnqueues: Map<string, { resolve: () => void, reject: (err: Error) => void }> = new Map();
+    private wsClients: Set<WebSocket> = new Set();
 
     constructor(options?: SnerdQueueOptions) {
         let binPath = options?.binaryPath;
@@ -121,10 +128,18 @@ export class SnerdQueue {
 
             try {
                 const parsedData = typeof msg.task_data === 'string' ? JSON.parse(msg.task_data) : msg.task_data;
-                await handler(parsedData);
+                await taskContext.run(msg.task_id, async () => {
+                    await handler(parsedData);
+                });
                 this.send({ action: 'result', task_id: msg.task_id, status: 'success' });
             } catch (error: any) {
                 this.send({ action: 'result', task_id: msg.task_id, status: 'error', error_msg: error.message || 'Unknown error during execution.' });
+            }
+        } else if (msg.action === 'progress') {
+            for (const client of this.wsClients) {
+                if (client.readyState === WebSocket.OPEN) {
+                    client.send(JSON.stringify(msg));
+                }
             }
         } else if (msg.action === 'max_retries_reached') {
             console.warn(`[Snerd] Dead Letter Queue: Task ${msg.task_id} (${msg.task_type}) permanently failed after max retries.`);
@@ -165,4 +180,108 @@ export class SnerdQueue {
         this.isShuttingDown = true;
         this.engine.kill('SIGINT');
     }
+
+    public yieldProgress(data: string) {
+        const taskId = taskContext.getStore();
+        if (!taskId) {
+            throw new Error('[Snerd] yieldProgress must be called within a task handler context.');
+        }
+        this.send({ action: 'progress', task_id: taskId, data });
+    }
+
+    public startDashboard(port: number = 8080) {
+        const server = http.createServer((req, res) => {
+            const storagePath = this.engine.spawnargs[1] || './.snerdata';
+            const tasksPath = path.join(storagePath, 'tasks', 'tasks.log');
+
+            const corsHeaders = {
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
+            };
+
+            if (req.method === 'OPTIONS') {
+                res.writeHead(204, corsHeaders);
+                res.end();
+                return;
+            }
+
+            if (req.method === 'GET') {
+                if (req.url === '/') {
+                    const htmlPath = path.join(__dirname, '..', 'static', 'index.html');
+                    if (fs.existsSync(htmlPath)) {
+                        res.writeHead(200, { 'Content-Type': 'text/html' });
+                        res.end(fs.readFileSync(htmlPath));
+                    } else {
+                        res.writeHead(404);
+                        res.end('Dashboard UI not found in static folder.');
+                    }
+                } else if (req.url === '/api/stats') {
+                    const stats = { enqueued: 0, processed: 0, failed: 0 };
+                    if (fs.existsSync(tasksPath)) {
+                        try {
+                            const content = fs.readFileSync(tasksPath, 'utf8');
+                            for (const line of content.split('\n')) {
+                                if (!line.trim()) continue;
+                                const t = JSON.parse(line);
+                                stats.enqueued++;
+                                if (t.deletedAt) {
+                                    if (t.lastJobError) stats.failed++;
+                                    else stats.processed++;
+                                }
+                            }
+                        } catch(e) {}
+                    }
+                    res.writeHead(200, { 'Content-Type': 'application/json', ...corsHeaders });
+                    res.end(JSON.stringify(stats));
+                } else if (req.url === '/api/tasks') {
+                    const tasksMap = new Map();
+                    if (fs.existsSync(tasksPath)) {
+                        try {
+                            const content = fs.readFileSync(tasksPath, 'utf8');
+                            for (const line of content.split('\n')) {
+                                if (!line.trim()) continue;
+                                const t = JSON.parse(line);
+                                tasksMap.set(t.taskId, t);
+                            }
+                        } catch(e) {}
+                    }
+                    
+                    const formatted = [];
+                    for (const t of tasksMap.values()) {
+                        let status = 'queued';
+                        if (t.deletedAt) {
+                            status = t.lastJobError ? 'failed' : 'completed';
+                        } else {
+                            status = t.lastJobError ? 'failed' : 'queued';
+                        }
+                        formatted.push({
+                            id: t.taskId,
+                            type: t.taskType,
+                            status,
+                            progress: 0,
+                            retryCount: t.retryCount || 0,
+                            maxRetries: t.maxRetries || 3,
+                            retryAfterTime: t.retryAfterTime
+                        });
+                    }
+                    res.writeHead(200, { 'Content-Type': 'application/json', ...corsHeaders });
+                    res.end(JSON.stringify(formatted.slice(0, 50)));
+                } else {
+                    res.writeHead(404);
+                    res.end();
+                }
+            }
+        });
+
+        const wss = new WebSocketServer({ server });
+        wss.on('connection', (ws) => {
+            this.wsClients.add(ws);
+            ws.on('close', () => this.wsClients.delete(ws));
+        });
+
+        server.listen(port, () => {
+            console.log(`[Snerd] Dashboard running on http://localhost:${port}`);
+        });
+    }
+
 }

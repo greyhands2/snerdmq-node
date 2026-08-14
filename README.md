@@ -1,5 +1,6 @@
 <div align="center">
-  <h1>🚀 SnerdMQ Node.js SDK</h1>
+  <img src="./assets/Designer-9.png" height="120" alt="SnerdMQ Node.js Logo" />
+  <h1>🚀 SnerdMQ Node.js SDK v0.2.0</h1>
   <p>The official Node.js & TypeScript SDK for SnerdMQ – A C-speed, zero-dependency background job engine.</p>
 
   [![npm version](https://img.shields.io/npm/v/snerdmq-node)](https://www.npmjs.com/package/snerdmq-node)
@@ -8,10 +9,21 @@
 
 This is the official Node.js client for **SnerdMQ**. It acts as a lightweight, elegant wrapper over the underlying Rust background daemon. It handles all JSON-RPC communication, standard I/O piping, and event loop orchestration so you can write background jobs natively in JavaScript or TypeScript.
 
-## ✨ Features
+## ✨ v0.2.0 AI-Era Features
+- **Smart API Rate-Limiting**: Natively tracks `rateLimitGroup` execution velocity to prevent 429 "Too Many Requests" API errors.
+- **Payload-Hashing Deduplication**: Automatically computes cryptographic hashes to drop duplicate tasks instantly.
+- **Dynamic Float Prioritization**: A native Binary Max-Heap bypasses standard FIFO rules for high urgency tasks.
 - **Zero Rust Required**: Our post-install script automatically downloads the pre-compiled C-speed Rust binary for your OS.
 - **Native TypeScript**: Written in 100% TypeScript. Enjoy full autocomplete and strict type checking out of the box.
 - **Zero Config**: No redis, no databases, no ports. Just start enqueuing jobs.
+
+### ⚙️ Advanced Task Configuration (v0.2.0)
+To power complex AI workflows, tasks can now be configured with advanced orchestration parameters:
+
+* **`autoDedupe` (`boolean`)**: If set to `true`, the daemon computes a cryptographic hash of the `type` and `data`. If an identical payload is currently sitting in the queue pending execution, this new task is silently dropped. Excellent for preventing duplicate generative AI requests from trigger-happy users!
+* **`urgencyScore` (`number`)**: A value (e.g. `0.99`) used to bypass the standard FIFO queue. SnerdMQ uses a true Binary Max-Heap to continually float tasks with the highest urgency score to the very front of the execution line. Standard tasks default to `0.0`.
+* **`rateLimitGroup` (`string`)**: A custom string (e.g. `"openai_api"` or `"db_writes"`) that groups tasks together for backpressure control.
+* **`maxPerMinute` (`number`)**: Used in conjunction with `rateLimitGroup`. If the queue processes more tasks in this group than the allowed limit within a 60-second rolling window, further tasks in this group are temporarily paused. This natively prevents 429 "Too Many Requests" errors when bursting third-party APIs.
 
 ## 📦 Installation
 
@@ -39,12 +51,16 @@ queue.registerHandler('send_email', async (data) => {
     // ... your logic here (e.g., hitting SendGrid API)
 });
 
-// 3. Enqueue a job from anywhere in your codebase
+// 3. Enqueue a job from anywhere in your codebase (Now with v0.2.0 AI Features!)
 queue.enqueue({
     id: `email-${Date.now()}`,
     type: 'send_email',
     data: { to: 'john@wick.com', subject: 'Continental Update' },
-    maxRetries: 3
+    maxRetries: 3,
+    rateLimitGroup: 'email_api',
+    maxPerMinute: 100,
+    autoDedupe: true,
+    urgencyScore: 0.99
 });
 
 // 4. (Optional) Safely kill the daemon when your Node app exits
