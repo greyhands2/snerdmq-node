@@ -31,6 +31,7 @@ export type TaskHandler = (data: any) => Promise<void>;
 export class SnerdQueue {
     private engine: ChildProcess;
     private handlers: Map<string, TaskHandler> = new Map();
+    private maxRetryHandlers: Map<string, TaskHandler> = new Map();
     private isShuttingDown: boolean = false;
     private pendingEnqueues: Map<string, { resolve: () => void, reject: (err: Error) => void }> = new Map();
     private wsClients: Set<WebSocket> = new Set();
@@ -142,7 +143,19 @@ export class SnerdQueue {
                 }
             }
         } else if (msg.action === 'max_retries_reached') {
-            console.warn(`[Snerd] Dead Letter Queue: Task ${msg.task_id} (${msg.task_type}) permanently failed after max retries.`);
+            const handler = this.maxRetryHandlers.get(msg.task_type);
+            if (handler) {
+                try {
+                    const parsedData = typeof msg.task_data === 'string' ? JSON.parse(msg.task_data) : msg.task_data;
+                    await taskContext.run(msg.task_id, async () => {
+                        await handler(parsedData);
+                    });
+                } catch (error: any) {
+                    console.error(`[Snerd] Error in max retry handler for task ${msg.task_id}: ${error.message}`);
+                }
+            } else {
+                console.warn(`[Snerd] Dead Letter Queue: Task ${msg.task_id} (${msg.task_type}) permanently failed after max retries.`);
+            }
         }
     }
 
@@ -155,6 +168,10 @@ export class SnerdQueue {
     public registerHandler(taskType: string, handler: TaskHandler) {
         this.handlers.set(taskType, handler);
         this.send({ action: 'register', task_type: taskType });
+    }
+
+    public registerMaxRetryHandler(taskType: string, handler: TaskHandler) {
+        this.maxRetryHandlers.set(taskType, handler);
     }
 
     public enqueue(options: EnqueueOptions): Promise<void> {
