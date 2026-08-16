@@ -26,6 +26,7 @@ export interface EnqueueOptions {
     urgencyScore?: number;
     executeAt?: string | Date;
     cron?: string;
+    webhookUrl?: string;
 }
 
 export type TaskHandler = (data: any) => Promise<void>;
@@ -191,7 +192,8 @@ export class SnerdQueue {
                 auto_dedupe: options.autoDedupe,
                 urgency_score: options.urgencyScore,
                 execute_at: options.executeAt instanceof Date ? options.executeAt.toISOString() : options.executeAt,
-                cron: options.cron
+                cron: options.cron,
+                webhook_url: options.webhookUrl
             });
         });
     }
