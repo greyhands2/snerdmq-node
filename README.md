@@ -13,6 +13,7 @@ This is the official Node.js client for **SnerdMQ**. It acts as a lightweight, e
 - **Smart API Rate-Limiting**: Natively tracks `rateLimitGroup` execution velocity to prevent 429 "Too Many Requests" API errors.
 - **Payload-Hashing Deduplication**: Automatically computes cryptographic hashes to drop duplicate tasks instantly.
 - **Dynamic Float Prioritization**: A native Binary Max-Heap bypasses standard FIFO rules for high urgency tasks.
+- **Progress Streaming & Live Dashboard**: Handlers can stream progress updates to a built-in React UI dashboard served by the SDK.
 - **Zero Rust Required**: Our post-install script automatically downloads the pre-compiled C-speed Rust binary for your OS.
 - **Native TypeScript**: Written in 100% TypeScript. Enjoy full autocomplete and strict type checking out of the box.
 - **Zero Config**: No redis, no databases, no ports. Just start enqueuing jobs.
@@ -25,6 +26,7 @@ To power complex AI workflows, tasks can now be configured with advanced orchest
 * **`rateLimitGroup` (`string`)**: A custom string (e.g. `"openai_api"` or `"db_writes"`) that groups tasks together for backpressure control.
 * **`maxPerMinute` (`number`)**: Used in conjunction with `rateLimitGroup`. If the queue processes more tasks in this group than the allowed limit within a 60-second rolling window, further tasks in this group are temporarily paused. This natively prevents 429 "Too Many Requests" errors when bursting third-party APIs.
 * **`executeAt` (`string` | `Date`)**: A timestamp of when the job should be executed in the future.
+* **`retryAfter` (`number`)**: Backoff in **hours** before a failed job is retried (default `0.0`). See *Cron Jobs vs. Retryable Jobs* below.
 * **`cron` (`string`)**: A cron expression (e.g. `"0 * * * *"`) for recurring jobs. Shorthands like `"2h"` or `"10m"` are also supported.
 * **`webhookUrl` (`string`)**: By providing a webhook URL, SnerdMQ will completely bypass your local Node handlers and dispatch the task payload via an HTTP POST request directly to the specified URL.
 * **`maxExecutionSeconds` (`number`)**: Optional hard timeout in seconds. If execution takes longer, it's marked as failed.
@@ -69,20 +71,28 @@ queue.registerHandler('send_email', async (data) => {
     // ... your logic here (e.g., hitting SendGrid API)
 });
 
-// 3. Enqueue a job from anywhere in your codebase (Now with v0.2.1 AI Features!)
+// 3. Enqueue a job from anywhere in your codebase
 queue.enqueue({
     id: `email-${Date.now()}`,
     type: 'send_email',
     data: { to: 'john@wick.com', subject: 'Continental Update' },
     maxRetries: 3,
+    retryAfter: 0.5,          // Wait 30 minutes before retrying a failed job
     rateLimitGroup: 'email_api',
+    maxPerMinute: 100,
+});
 
-
-    autoDedupe: true,
-    urgencyScore: 0.99,
-    cron: "1h", // Runs every 1 hour!
-    webhookUrl: "https://api.example.com/webhook", // Execute via HTTP instead of local handlers
-    maxExecutionSeconds: 300 // Max Execution Seconds
+// Need scheduling, deduplication, or serverless execution? All orchestration
+// options are opt-in — combine only what you need:
+queue.enqueue({
+    id: `email-digest-${Date.now()}`,
+    type: 'send_email',
+    data: { to: 'john@wick.com', subject: 'Daily Digest' },
+    cron: '0 8 * * *',                  // Run every day at 08:00
+    autoDedupe: true,                   // Drop identical pending payloads
+    urgencyScore: 0.99,                 // Float to the front of the queue
+    webhookUrl: 'https://api.example.com/webhook', // Execute via HTTP instead of local handlers
+    maxExecutionSeconds: 300,           // Hard timeout
 });
 
 // 4. (Optional) Safely kill the daemon when your Node app exits
@@ -102,6 +112,46 @@ queue.registerMaxRetryHandler('send_email', async (data) => {
     console.error(`Email task failed after all retries! Data: ${JSON.stringify(data)}`);
 });
 ```
+
+---
+
+## 📊 Live Dashboard
+
+SnerdMQ ships with a built-in **React UI dashboard** served directly by the SDK — no extra services or ports to manage in your infrastructure. It gives you a real-time window into your queue:
+
+- **Live stats**: total enqueued, processed, and failed jobs
+- **Recent Jobs table**: per-task status (`queued`, `active`, `completed`, `failed`, `dead_letter`), retry counts, and badges showing which features a task uses (cron / webhook / timeout)
+- **Real-time Progress Stream**: live output from `yieldProgress` calls in your handlers
+
+```typescript
+const queue = new SnerdQueue();
+
+// Start the built-in dashboard on http://localhost:9090
+queue.startDashboard(9090);
+
+// ... register handlers, start listening, enqueue jobs ...
+```
+
+Then open **http://localhost:9090** in your browser. Updates are pushed to the page over WebSocket the moment jobs change state, and the dashboard also exposes a small JSON API (`/api/stats`, `/api/tasks`, `/api/progress`) if you want to build your own tooling on top.
+
+> **Note:** `startDashboard` only serves the UI — your jobs keep running whether or not the dashboard is open.
+
+---
+
+## 📡 Progress Reporting
+
+Long-running handlers can stream live updates to the Dashboard's Progress Stream (ideal for streaming LLM tokens or multi-step ETL work):
+
+```typescript
+queue.registerHandler('generate_report', async (data) => {
+    for (let step = 1; step <= 10; step++) {
+        await doWork(step);
+        queue.yieldProgress(`Step ${step}/10 complete`);
+    }
+});
+```
+
+> `yieldProgress` must be called **inside a task handler** — the SDK tracks which task is currently executing so each update lands on the right job in the dashboard.
 
 ---
 

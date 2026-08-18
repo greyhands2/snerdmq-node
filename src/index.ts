@@ -252,20 +252,24 @@ export class SnerdQueue {
                         res.end('Dashboard UI not found in static folder.');
                     }
                 } else if (req.url === '/api/stats') {
-                    const stats = { enqueued: 0, processed: 0, failed: 0 };
+                    const tasksMap = new Map();
                     if (fs.existsSync(tasksPath)) {
                         try {
                             const content = fs.readFileSync(tasksPath, 'utf8');
                             for (const line of content.split('\n')) {
                                 if (!line.trim()) continue;
                                 const t = JSON.parse(line);
-                                stats.enqueued++;
-                                if (t.deletedAt) {
-                                    if (t.lastJobError) stats.failed++;
-                                    else stats.processed++;
-                                }
+                                tasksMap.set(t.taskId, t);
                             }
                         } catch(e) {}
+                    }
+                    const stats = { enqueued: 0, processed: 0, failed: 0 };
+                    for (const t of tasksMap.values()) {
+                        stats.enqueued++;
+                        if (t.deletedAt) {
+                            if (t.LastJobError) stats.failed++;
+                            else stats.processed++;
+                        }
                     }
                     res.writeHead(200, { 'Content-Type': 'application/json', ...corsHeaders });
                     res.end(JSON.stringify(stats));
@@ -284,11 +288,20 @@ export class SnerdQueue {
                     
                     const formatted = [];
                     for (const t of tasksMap.values()) {
-                        let status = 'queued';
+                        let status: string;
                         if (t.deletedAt) {
-                            status = t.lastJobError ? 'failed' : 'completed';
+                            if (t.LastJobError && (t.retryCount || 0) >= (t.maxRetries || 3)) {
+                                status = 'dead_letter';
+                            } else if (t.LastJobError) {
+                                status = 'failed';
+                            } else {
+                                status = 'completed';
+                            }
+                        } else if (t.LastJobError) {
+                            status = 'failed';
                         } else {
-                            status = t.lastJobError ? 'failed' : 'queued';
+                            const execTime = t.executeAt ? new Date(t.executeAt).getTime() : 0;
+                            status = (execTime > 0 && execTime <= Date.now()) ? 'active' : 'queued';
                         }
                         formatted.push({
                             id: t.taskId,
@@ -297,7 +310,10 @@ export class SnerdQueue {
                             progress: 0,
                             retryCount: t.retryCount || 0,
                             maxRetries: t.maxRetries || 3,
-                            retryAfterTime: t.retryAfterTime
+                            retryAfterTime: t.retryAfterTime,
+                            cronExpression: t.cronExpression || null,
+                            webhookUrl: t.webhookUrl || null,
+                            maxExecutionSeconds: t.maxExecutionSeconds || null
                         });
                     }
                     res.writeHead(200, { 'Content-Type': 'application/json', ...corsHeaders });
