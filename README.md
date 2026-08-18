@@ -4,7 +4,7 @@
   <p>The official Node.js & TypeScript SDK for SnerdMQ – A C-speed, zero-dependency background job engine.</p>
 
   [![npm version](https://img.shields.io/npm/v/snerdmq-node)](https://www.npmjs.com/package/snerdmq-node)
-  [![License](https://img.shields.io/npm/l/snerdmq-node)](https://github.com/greyhands2/snerdmq-node/blob/main/LICENSE)
+  [![License](https://img.shields.io/npm/l/snerdmq-node)](https://github.com/speed-nerd/snerdmq-node/blob/main/LICENSE)
 </div>
 
 This is the official Node.js client for **SnerdMQ**. It acts as a lightweight, elegant wrapper over the underlying Rust background daemon. It handles all JSON-RPC communication, standard I/O piping, and event loop orchestration so you can write background jobs natively in JavaScript or TypeScript.

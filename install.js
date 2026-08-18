@@ -4,7 +4,7 @@ const https = require('https');
 const os = require('os');
 const child_process = require('child_process');
 
-const REPO = 'greyhands2/snerdmq';
+const REPO = 'speed-nerd/snerdmq';
 // TODO: When you actually publish a release to GitHub, bump this version!
 const VERSION = 'v0.1.1'; 
 
