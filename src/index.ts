@@ -72,6 +72,8 @@ export class SnerdQueue {
         process.on('exit', this.shutdown.bind(this));
     }
 
+    private engineAlive: boolean = true;
+
     private setupEventLoop() {
         let buffer = '';
 
@@ -98,10 +100,22 @@ export class SnerdQueue {
             console.error(`[Snerd Engine Error]: ${data.toString().trim()}`);
         });
 
+        // Prevent EPIPE crash when daemon dies
+        this.engine.stdin!.on('error', (err: any) => {
+            if (err.code === 'EPIPE' || err.code === 'ERR_STREAM_DESTROYED') return;
+            console.error(`[Snerd] stdin error: ${err.message}`);
+        });
+
         this.engine.on('close', (code: number | null) => {
+            this.engineAlive = false;
             if (!this.isShuttingDown) {
                 console.warn(`[Snerd] Engine process terminated unexpectedly with code ${code}.`);
             }
+            // Reject all pending enqueue promises
+            for (const [id, pending] of this.pendingEnqueues) {
+                pending.reject(new Error(`[Snerd] Engine terminated before ack for task '${id}'`));
+            }
+            this.pendingEnqueues.clear();
         });
     }
 
@@ -162,8 +176,14 @@ export class SnerdQueue {
             if (handler) {
                 try {
                     const parsedData = typeof msg.task_data === 'string' ? JSON.parse(msg.task_data) : msg.task_data;
+                    // Pass full task info to the DLQ handler (not just data)
+                    const dlqPayload = {
+                        taskId: msg.task_id,
+                        taskType: msg.task_type,
+                        data: parsedData,
+                    };
                     await taskContext.run(msg.task_id, async () => {
-                        await handler(parsedData);
+                        await handler(dlqPayload);
                     });
                 } catch (error: any) {
                     console.error(`[Snerd] Error in max retry handler for task ${msg.task_id}: ${error.message}`);
@@ -175,8 +195,14 @@ export class SnerdQueue {
     }
 
     private send(msg: any) {
-        if (this.engine.stdin && !this.isShuttingDown) {
-            this.engine.stdin.write(JSON.stringify(msg) + '\n');
+        if (this.engine.stdin && !this.isShuttingDown && this.engineAlive) {
+            try {
+                this.engine.stdin.write(JSON.stringify(msg) + '\n');
+            } catch (e: any) {
+                if (e.code !== 'EPIPE' && e.code !== 'ERR_STREAM_DESTROYED') {
+                    throw e;
+                }
+            }
         }
     }
 
