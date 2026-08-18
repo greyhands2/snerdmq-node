@@ -5,6 +5,7 @@
 
   [![npm version](https://img.shields.io/npm/v/snerdmq-node)](https://www.npmjs.com/package/snerdmq-node)
   [![License](https://img.shields.io/npm/l/snerdmq-node)](https://github.com/speed-nerd/snerdmq-node/blob/main/LICENSE)
+  [![Docs](https://img.shields.io/badge/docs-speed--nerd.github.io-blue)](https://speed-nerd.github.io/docs/)
 </div>
 
 This is the official Node.js client for **SnerdMQ**. It acts as a lightweight, elegant wrapper over the underlying Rust background daemon. It handles all JSON-RPC communication, standard I/O piping, and event loop orchestration so you can write background jobs natively in JavaScript or TypeScript.
