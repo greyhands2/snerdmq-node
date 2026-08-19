@@ -1,6 +1,6 @@
 <div align="center">
   <img src="./assets/Designer-9.png" height="120" alt="SnerdMQ Node.js Logo" />
-  <h1>🚀 SnerdMQ Node.js SDK v0.3.2</h1>
+  <h1>🚀 SnerdMQ Node.js SDK v0.3.3</h1>
   <p>The official Node.js & TypeScript SDK for SnerdMQ – A C-speed, zero-dependency background job engine.</p>
 
   [![npm version](https://img.shields.io/npm/v/snerdmq-node)](https://www.npmjs.com/package/snerdmq-node)
@@ -10,7 +10,7 @@
 
 This is the official Node.js client for **SnerdMQ**. It acts as a lightweight, elegant wrapper over the underlying Rust background daemon. It handles all JSON-RPC communication, standard I/O piping, and event loop orchestration so you can write background jobs natively in JavaScript or TypeScript.
 
-## ✨ v0.3.2 AI Features
+## ✨ v0.3.3 AI Features
 - **Smart API Rate-Limiting**: Natively tracks `rateLimitGroup` execution velocity to prevent 429 "Too Many Requests" API errors.
 - **Payload-Hashing Deduplication**: Automatically computes cryptographic hashes to drop duplicate tasks instantly.
 - **Dynamic Float Prioritization**: A native Binary Max-Heap bypasses standard FIFO rules for high urgency tasks.
@@ -19,7 +19,7 @@ This is the official Node.js client for **SnerdMQ**. It acts as a lightweight, e
 - **Native TypeScript**: Written in 100% TypeScript. Enjoy full autocomplete and strict type checking out of the box.
 - **Zero Config**: No redis, no databases, no ports. Just start enqueuing jobs.
 
-### ⚙️ Advanced Task Configuration (v0.3.2)
+### ⚙️ Advanced Task Configuration (v0.3.3)
 To power complex AI workflows, tasks can now be configured with advanced orchestration parameters:
 
 * **`autoDedupe` (`boolean`)**: If set to `true`, the daemon computes a cryptographic hash of the `type` and `data`. If an identical payload is currently sitting in the queue pending execution, this new task is silently dropped. Excellent for preventing duplicate generative AI requests from trigger-happy users!
@@ -156,20 +156,77 @@ queue.registerHandler('generate_report', async (data) => {
 
 ---
 
-## 🌍 Advanced: Distributed Scaling
+## 🧩 Queue Topology: One Queue or Many?
 
-By default, the SDK spins up the Rust daemon which writes the queue to a local file (`.snerdata/tasks/tasks.log`). 
+### ✅ Recommended: one queue, all job types (singleton)
 
-If you have multiple Node.js servers running behind a load balancer and want them to share the exact same queue, simply mount a **Shared Network Drive** (like AWS EFS or NFS) to all of your servers and pass the shared path into the `SnerdQueue` options:
+Each `SnerdQueue` client spawns its own Rust daemon and **exclusively owns** its storage directory (`.snerdata` by default). The recommended pattern is **one client per application process**: register every job type on it and serve a single shared dashboard:
 
 ```typescript
 import { SnerdQueue } from 'snerdmq-node';
 
-// All 10 of your Node.js servers point to the exact same shared file!
-// SnerdMQ's native OS file-locking guarantees zero data corruption.
+// ONE queue client for the whole app
+const queue = new SnerdQueue();
+
+// Job type #1: image processing
+queue.registerHandler('process_image', async (data) => {
+    console.log(`Processing image: ${data.image_id}`);
+});
+
+// Job type #2: OTP emails — same queue, same daemon
+queue.registerHandler('send_otp_email', async (data) => {
+    console.log(`Sending OTP to: ${data.to}`);
+});
+
+// Both job types flow through the exact same queue
+await queue.enqueue({ id: 'img-1', type: 'process_image', data: { image_id: 'abc123' }, maxRetries: 3, retryAfter: 0.5 });
+await queue.enqueue({ id: 'otp-1', type: 'send_otp_email', data: { to: 'john@wick.com' }, maxRetries: 3, retryAfter: 0.5 });
+
+// ONE dashboard shows every job type
+queue.startDashboard(8080);
+```
+
+All job types share everything: the same persistent job log, retry/DLQ pipeline, rate-limit state, stats — and one dashboard at `http://localhost:8080` showing all of them.
+
+### 🚫 Same storage twice = fails fast
+
+The daemon takes an **exclusive OS-level lock** on its storage directory at startup. A second client on the same storage fails instead of silently double-executing your jobs:
+
+```typescript
+const first = new SnerdQueue(); // ✅ owns .snerdata
+const second = new SnerdQueue(); // ❌ daemon refuses to start:
+// "Another daemon is already running on storage '.snerdata'"
+```
+
+This applies across processes too — e.g. with Node's `cluster` module, every forked worker spawns its own daemon, so each worker needs its own `storagePath`.
+
+### 🔀 Need multiple queues? Give each one its own storage
+
+```typescript
+const images = new SnerdQueue({ storagePath: '.snerdata-images' });
+const emails = new SnerdQueue({ storagePath: '.snerdata-emails' });
+
+images.startDashboard(8080); // separate dashboards, so separate ports
+emails.startDashboard(8081);
+```
+
+Now you have two fully independent engines: separate job logs, separate rate-limit state, separate dashboards. Only split when you actually need isolation (different teams, different retention, independent monitoring) — otherwise the singleton is simpler and recommended.
+
+---
+
+## 🌍 Advanced: Distributed Scaling
+
+Because the daemon exclusively locks its storage directory, scaling horizontally means **one queue per server**, each with its own storage. Your load balancer routes requests across servers, and every server processes the jobs it enqueued:
+
+```typescript
+import { SnerdQueue } from 'snerdmq-node';
+
+// Each server runs its own daemon on its own storage dir (local disk works fine)
 const queue = new SnerdQueue({
-    storagePath: '/mnt/aws-efs-shared-drive/snerd_tasks.log'
+    storagePath: '/var/data/snerd' // per-server storage
 });
 ```
+
+A shared network drive (AWS EFS or NFS) is still a good home for that storage when a single instance needs durable state — e.g. a container that restarts but must keep its queue. Native OS file locking (`flock`) keeps writes safe — no Redis required.
 
 *Built with ❤️ for John Wick tier engineering.*
